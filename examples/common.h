@@ -92,6 +92,10 @@ struct gpt_params {
     bool numa              = false; // attempt optimizations that help on some NUMA systems
     bool export_cgraph     = false; // export the computation graph
     bool verbose_prompt    = false; // print prompt tokens before generation
+
+    std::string http_host  = "127.0.0.1"; // http server hostname
+    uint16_t http_port     = 42000; // http server port
+    bool http_enabled      = false; // http server enabled
 };
 
 bool gpt_params_parse(int argc, char ** argv, gpt_params & params);
@@ -112,3 +116,5 @@ std::vector<llama_token> llama_tokenize(struct llama_context * ctx, const std::s
 
 std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_params(const gpt_params & params);
 struct llama_context_params llama_context_params_from_gpt_params(const gpt_params & params);
+
+std::string iso8601_timestamp();

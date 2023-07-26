@@ -1,5 +1,5 @@
 # Define the default target now so that it is always the first target
-BUILD_TARGETS = main quantize quantize-stats perplexity embedding vdot train-text-from-scratch convert-llama2c-to-ggml simple server embd-input-test llama-bench
+BUILD_TARGETS = main quantize quantize-stats perplexity embedding vdot train-text-from-scratch convert-llama2c-to-ggml simple simple-http server embd-input-test llama-bench
 
 # Binaries only useful for tests
 TEST_TARGETS = tests/test-llama-grammar tests/test-grammar-parser tests/test-double-float tests/test-grad0 tests/test-opt tests/test-quantize-fns tests/test-quantize-perf tests/test-sampling tests/test-tokenizer-0
@@ -338,6 +338,9 @@ common.o: examples/common.cpp examples/common.h
 console.o: examples/console.cpp examples/console.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+http.o: examples/simple-http/http.cpp examples/simple-http/http.h deps/cpp-httplib/httplib.h deps/json/single_include/nlohmann/json.hpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 grammar-parser.o: examples/grammar-parser.cpp examples/grammar-parser.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -345,7 +348,7 @@ libllama.so: llama.o ggml.o $(OBJS)
 	$(CXX) $(CXXFLAGS) -shared -fPIC -o $@ $^ $(LDFLAGS)
 
 clean:
-	rm -vf *.o *.so *.dll main quantize quantize-stats perplexity embedding benchmark-matmult save-load-state server simple vdot train-text-from-scratch convert-llama2c-to-ggml embd-input-test llama-bench build-info.h $(TEST_TARGETS)
+	rm -vf *.o *.so *.dll main quantize quantize-stats perplexity embedding benchmark-matmult save-load-state server simple simple-http vdot train-text-from-scratch convert-llama2c-to-ggml embd-input-test llama-bench build-info.h $(TEST_TARGETS)
 
 #
 # Examples
@@ -358,6 +361,9 @@ main: examples/main/main.cpp                                  build-info.h ggml.
 	@echo
 
 simple: examples/simple/simple.cpp                            build-info.h ggml.o llama.o common.o $(OBJS)
+	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+
+simple-http: examples/simple-http/simple-http.cpp                  build-info.h ggml.o llama.o common.o http.o $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 
 quantize: examples/quantize/quantize.cpp                      build-info.h ggml.o llama.o $(OBJS)

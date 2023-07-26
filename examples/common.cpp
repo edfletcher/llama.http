@@ -502,6 +502,17 @@ bool gpt_params_parse(int argc, char ** argv, gpt_params & params) {
                 std::istreambuf_iterator<char>(),
                 std::back_inserter(params.grammar)
             );
+        } else if (arg == "-H" || arg == "--http") {
+            params.http_enabled = true;
+
+            if (i + 1 < argc && argv[i + 1] && argv[i + 1][0] != '-') {
+                auto hostport_str = std::string(argv[++i]);
+                auto colon_pos = hostport_str.find(':');
+                if (colon_pos != std::string::npos) {
+                    params.http_host = hostport_str.substr(0, colon_pos);
+                    params.http_port = std::stoi(hostport_str.substr(colon_pos + 1));
+                }
+            }
         } else {
             fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
             gpt_print_usage(argc, argv, default_params);
@@ -626,6 +637,8 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     fprintf(stderr, "  --simple-io           use basic IO for better compatibility in subprocesses and limited consoles\n");
     fprintf(stdout, "  --lora FNAME          apply LoRA adapter (implies --no-mmap)\n");
     fprintf(stdout, "  --lora-base FNAME     optional model to use as a base for the layers modified by the LoRA adapter\n");
+    fprintf(stdout, "  -H host:port, --http host:port\n");
+    fprintf(stdout, "                        run an HTTP server instead of prompting locally\n");
     fprintf(stdout, "  -m FNAME, --model FNAME\n");
     fprintf(stdout, "                        model path (default: %s)\n", params.model.c_str());
     fprintf(stdout, "\n");
@@ -715,4 +728,13 @@ std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_par
     }
 
     return std::make_tuple(model, lctx);
+}
+
+std::string iso8601_timestamp()
+{
+    time_t now;
+    time(&now);
+    char buf[sizeof "YYYY-MM-DDTHH:mm:SSZ"];
+    strftime(buf, sizeof buf, "%FT%TZ", gmtime(&now));
+    return std::string(buf);
 }

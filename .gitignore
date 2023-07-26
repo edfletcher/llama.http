@@ -42,6 +42,7 @@ models-mnt
 /train-text-from-scratch
 /convert-llama2c-to-ggml
 /simple
+/simple-http
 /benchmark-matmult
 /vdot
 /server
