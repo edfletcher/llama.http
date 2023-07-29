@@ -1,0 +1,3 @@
+#!/bin/bash
+# would love the llama "library" log properly to avoid this...
+./simple-http $@ 2> /dev/null

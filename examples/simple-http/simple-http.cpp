@@ -37,7 +37,7 @@
 
 namespace fs = std::experimental::filesystem;
 
-std::string run_one_prompt(gpt_params &params, nlohmann::json model_spec, struct llama_timings *timings = nullptr)
+std::string run_one_prompt(gpt_params &params, struct llama_timings *timings = nullptr)
 {
     llama_model *model;
     llama_context *ctx;
@@ -46,29 +46,20 @@ std::string run_one_prompt(gpt_params &params, nlohmann::json model_spec, struct
 
     if (model == nullptr)
     {
-        LOGGER("error: unable to load model\n");
+        HTTP_LOGGER("error: unable to load model\n");
         exit(-1);
     }
 
-    std::string pre = "";
-    std::string post = "";
-
-    if (!model_spec.is_null() && !model_spec["promptWrappers"].is_null())
-    {
-        pre = model_spec["promptWrappers"]["pre"];
-        post = model_spec["promptWrappers"]["post"];
-    }
-
     std::vector<llama_token> tokens_list;
-    tokens_list = ::llama_tokenize(ctx, pre + params.prompt + post, true);
+    tokens_list = ::llama_tokenize(ctx, params.prompt, true);
 
     const int max_context_size = llama_n_ctx(ctx);
     const int max_tokens_list_size = max_context_size - 4;
 
     if ((int)tokens_list.size() > max_tokens_list_size)
     {
-        LOGGER("error: prompt too long (%d tokens, max %d)\n",
-               (int)tokens_list.size(), max_tokens_list_size);
+        HTTP_LOGGER("error: prompt too long (%d tokens, max %d)\n",
+                    (int)tokens_list.size(), max_tokens_list_size);
         return "";
     }
 
@@ -82,7 +73,7 @@ std::string run_one_prompt(gpt_params &params, nlohmann::json model_spec, struct
     {
         if (llama_eval(ctx, tokens_list.data(), tokens_list.size(), llama_get_kv_cache_token_count(ctx), params.n_threads))
         {
-            LOGGER("failed to eval\n");
+            HTTP_LOGGER("failed to eval\n");
             return "";
         }
 
@@ -162,7 +153,7 @@ models_map_t discover_valid_models(std::string model_path)
                 !json_parsed["sourceURL"].is_null())
             {
                 valid_models.emplace(std::make_pair(bin.filename().string(), json_parsed));
-                LOGGER("Found valid model %s\n", bin.filename().string().c_str());
+                HTTP_LOGGER("Found valid model %s\n", bin.filename().string().c_str());
             }
         }
     }
@@ -172,8 +163,16 @@ models_map_t discover_valid_models(std::string model_path)
 
 void sighandler(int signal)
 {
-    (void)signal;
+    HTTP_LOGGER("Signaled! %d\n", signal);
     exit(0);
+}
+
+void increment_total_timings(struct llama_timings *new_timings, struct llama_timings *total_timings)
+{
+    total_timings->t_load_ms += new_timings->t_load_ms;
+    total_timings->t_p_eval_ms += new_timings->t_p_eval_ms;
+    total_timings->t_eval_ms += new_timings->t_eval_ms;
+    total_timings->n_sample += new_timings->n_sample;
 }
 
 int main(int argc, char **argv)
@@ -184,11 +183,14 @@ int main(int argc, char **argv)
     auto host_opt = op.add<popl::Value<std::string>>("H", "host", "Hostname on which to bind & listen", "localhost");
     auto port_opt = op.add<popl::Value<int>>("p", "port", "Port on which to bind & listen", 42000);
     auto ctx_sz_opt = op.add<popl::Value<int>>("c", "context-size", "Set the model's context size (in tokens)", 2048);
+    auto priv_opt = op.add<popl::Switch>("s", "session-private", "Enable a private endpoint (resets at process restart) returning queue information");
+    auto priv_path_opt = op.add<popl::Value<std::string>>("S", "session-private-prefix", "Set the prefix path element for the session private endpoint. Requires -s.");
+    auto ptimings_opt = op.add<popl::Switch>("T", "print-timings", "Print timing info for each response to stderr");
     op.parse(argc, argv);
 
     if (!model_opt->is_set())
     {
-        LOGGER("Must set a model file.\n\n");
+        HTTP_LOGGER("Must set a model file.\n\n");
         help_opt->set_value(true);
     }
 
@@ -202,7 +204,7 @@ int main(int argc, char **argv)
 
     if (!models.size())
     {
-        LOGGER("No valid models found in '%s'!\n", model_opt->value().c_str());
+        HTTP_LOGGER("No valid models found in '%s'!\n", model_opt->value().c_str());
     }
 
     gpt_params params;
@@ -212,11 +214,31 @@ int main(int argc, char **argv)
 
     llama_backend_init(params.numa);
     signal(SIGINT, sighandler);
-    LOGGER("Using context size of %d\n", params.n_ctx);
-    auto prompt_servicer = http_server_run(hname, port, params.n_ctx, models);
-    LOGGER("Listening on %s:%d\n", hname.c_str(), port);
+    signal(SIGTERM, sighandler);
 
-    std::string model;
+    llama_timings total_timings;
+    bzero(&total_timings, sizeof(llama_timings));
+    http_prompt_servicer prompt_servicer;
+    std::shared_ptr<std::string> session_ep;
+    if (priv_opt->is_set())
+    {
+        if (priv_path_opt->is_set())
+        {
+            session_ep = std::make_shared<std::string>(priv_path_opt->value());
+        }
+
+        prompt_servicer = http_server_run(hname, port, params.n_ctx, models, &session_ep, &total_timings);
+        HTTP_LOGGER("Session private endpoint is %s\n", session_ep->c_str());
+    }
+    else
+    {
+        prompt_servicer = http_server_run(hname, port, params.n_ctx, models, nullptr, &total_timings);
+    }
+
+    HTTP_LOGGER("Using context size of %d\n", params.n_ctx);
+    HTTP_LOGGER("Listening on %s:%d\n", hname.c_str(), port);
+
+    ServicerResponse prompt_resp;
     while (true)
     {
         std::string response;
@@ -225,19 +247,24 @@ int main(int argc, char **argv)
 
         if (params.prompt.size())
         {
-            response = run_one_prompt(params, models[model], &timings);
-            LOGGER("Response to \"%s\":\n%s\n", params.prompt.c_str(), response.c_str());
+            response = run_one_prompt(params, &timings);
+            HTTP_LOGGER("Response to prompt ID %s \"%s\" via %s:\n%s\n",
+                        prompt_resp.id.c_str(), params.prompt.c_str(), prompt_resp.model.c_str(), response.c_str());
+            increment_total_timings(&timings, &total_timings);
+            if (ptimings_opt->is_set())
+            {
+                llama_print_timings_direct(timings, stdout);
+            }
         }
 
         std::string prompt;
-        std::tie(prompt, model) = prompt_servicer(
+        prompt_resp = prompt_servicer(
             response.size() ? &response : nullptr,
-            (timings.t_end_ms - timings.t_start_ms),
+            timings.t_eval_ms,
             timings.n_sample);
 
-        params.prompt = prompt;
-        params.model = fs::path{model_opt->value()} / model;
-        LOGGER("Using model %s, prompting with: \"%s\"\n", model.c_str(), params.prompt.c_str());
+        params.prompt = prompt_resp.prompt;
+        params.model = fs::path{model_opt->value()} / prompt_resp.model;
     }
 
     return 0;

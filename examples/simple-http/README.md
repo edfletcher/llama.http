@@ -32,6 +32,8 @@ An HTTP server with a very simple REST interface.
 }
 ```
 
+Optionally, the `promptWrappers` data structure seen elsewhere may be included, where the constituent parameters are optional and if included will override the configure prompt wrappers.
+
 Will return HTTP 413 if the prompt is too large, or `application/json` in the following shape on success:
 
 ```json
@@ -78,6 +80,10 @@ $ curl -vs http://127.0.0.1:42000/prompt/6af0c8af11830f91 | jq .
 
 ## Building
 
+You needn't build this yourself as I've made a docker image available [here](https://hub.docker.com/r/edfletcher/llama.http) (see [below](#from-docker-hub) for futher information on using it).
+
+### Locally
+
 Initialize the repository's submodule(s):
 
 ```shell
@@ -93,7 +99,23 @@ Then:
 $ make simple-http
 ```
 
+### With docker
+
+This must be run _from the project's root directory_, e.g. two directories _up_ from where this README and Dockerfile live.
+
+`<TAG>` will be your image's user tag, such as `simplehttp:1`.
+
+```shell
+$ pwd
+/home/edfletcher/llama.http
+$ docker build -t <TAG> -f examples/simple-http/Dockerfile .
+...
+=> => naming to docker.io/library/<TAG>  
+```
+
 ## Running
+
+### Locally
 
 Run with `-h` for full, up-to-date help.
 
@@ -102,6 +124,24 @@ $ ./simple-http -m /path/to/models/
 ```
 
 The model path `/path/to/models` must have paired model binaries and sidecar JSON as specified below.
+
+### With docker
+
+#### From Docker Hub
+
+Replace the `<TAG>` in the command invocation below with `edfletcher/llama.http:latest`. That's it.
+
+See [here](https://hub.docker.com/r/edfletcher/llama.http) for full image information.
+
+#### From a local build
+
+Using the same `<TAG>` placeholder as in the build section above:
+
+```shell
+$ docker run -d -it -v <PATH_TO_MODELS>:/models -p 42000:42000 <TAG> -m /models -H 0.0.0.0
+```
+
+where `<PATH_TO_MODELS>` is the path where models and their sidecar JSONs are stored _on the local machine (host)_.
 
 ### Model Sidecar JSON
 
