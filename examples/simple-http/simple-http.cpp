@@ -93,8 +93,24 @@ std::string run_one_prompt(gpt_params &params, struct llama_timings *timings = n
 
         llama_token_data_array candidates_p = {candidates.data(), candidates.size(), false};
 
-        // Select it using the "Greedy sampling" method :
-        new_token_id = llama_sample_token_greedy(ctx, &candidates_p);
+        if (params.mirostat == 1)
+        {
+            static float mirostat_mu = 2.0f * params.mirostat_tau;
+            const int mirostat_m = 100;
+            llama_sample_temperature(ctx, &candidates_p, params.temp);
+            new_token_id = llama_sample_token_mirostat(ctx, &candidates_p, params.mirostat_tau, params.mirostat_eta, mirostat_m, &mirostat_mu);
+        }
+        else if (params.mirostat == 2)
+        {
+            static float mirostat_mu = 2.0f * params.mirostat_tau;
+            llama_sample_temperature(ctx, &candidates_p, params.temp);
+            new_token_id = llama_sample_token_mirostat_v2(ctx, &candidates_p, params.mirostat_tau, params.mirostat_eta, &mirostat_mu);
+        }
+        else
+        {
+            // Select it using the "Greedy sampling" method :
+            new_token_id = llama_sample_token_greedy(ctx, &candidates_p);
+        }
 
         // is it an end of stream ?
         if (new_token_id == llama_token_eos())
@@ -122,7 +138,7 @@ std::string run_one_prompt(gpt_params &params, struct llama_timings *timings = n
     return outstream.str();
 }
 
-models_map_t discover_valid_models(std::string model_path)
+void discover_valid_models(std::string model_path, models_map_t *models)
 {
     std::vector<fs::path> bins;
     std::map<std::string, fs::path> jsons;
@@ -139,7 +155,6 @@ models_map_t discover_valid_models(std::string model_path)
         }
     }
 
-    models_map_t valid_models;
     for (const auto &bin : bins)
     {
         auto expect_json_name = bin.filename().string() + ".json";
@@ -152,13 +167,12 @@ models_map_t discover_valid_models(std::string model_path)
                 !json_parsed["displayName"].is_null() &&
                 !json_parsed["sourceURL"].is_null())
             {
-                valid_models.emplace(std::make_pair(bin.filename().string(), json_parsed));
-                HTTP_LOGGER("Found valid model %s\n", bin.filename().string().c_str());
+                json_parsed["parentPath"] = model_path;
+                models->emplace(std::make_pair(bin.filename().string(), json_parsed));
+                HTTP_LOGGER("Found valid model %s in %s\n", bin.filename().string().c_str(), model_path.c_str());
             }
         }
     }
-
-    return valid_models;
 }
 
 void sighandler(int signal)
@@ -179,18 +193,24 @@ int main(int argc, char **argv)
 {
     popl::OptionParser op("allowed options");
     auto help_opt = op.add<popl::Switch>("h", "help", "This help");
-    auto model_opt = op.add<popl::Value<std::string>>("m", "model-path", "Path to model binaries & their sidecar JSONs");
+    auto model_opt = op.add<popl::Value<std::string>>("m", "model-path", "Path(s) to model binaries & their sidecar JSONs. Can be set multiple times & is not recursive.");
     auto host_opt = op.add<popl::Value<std::string>>("H", "host", "Hostname on which to bind & listen", "localhost");
     auto port_opt = op.add<popl::Value<int>>("p", "port", "Port on which to bind & listen", 42000);
+    auto temp_opt = op.add<popl::Value<float>>("t", "temperature", "Model temperature, between 0 and 1", 0.0);
     auto ctx_sz_opt = op.add<popl::Value<int>>("c", "context-size", "Set the model's context size (in tokens)", 2048);
-    auto priv_opt = op.add<popl::Switch>("s", "session-private", "Enable a private endpoint (resets at process restart) returning queue information");
-    auto priv_path_opt = op.add<popl::Value<std::string>>("S", "session-private-prefix", "Set the prefix path element for the session private endpoint. Requires -s.");
     auto ptimings_opt = op.add<popl::Switch>("T", "print-timings", "Print timing info for each response to stderr");
+    auto priv_opt = op.add<popl::Switch>("r", "runtime", "Enable runtime data endpoint. If -k and not -N, will be <runtime-prefix>/data; else instead of 'data', a random string.");
+    auto priv_path_opt = op.add<popl::Value<std::string>>("R", "runtime-prefix", "Set the prefix path element for the session private endpoint. Requires -s.");
+    auto keys_json_opt = op.add<popl::Value<std::string>>("k", "keys", "Path to a JSON file with an array of valid API keys");
+    auto rt_open_opt = op.add<popl::Switch>("N", "no-key-runtime", "When using -k & -s: do not require an API key for the runtime endpoint.");
+    auto protect_post_op = op.add<popl::Switch>("P", "protect-post", "When using -k: require an API key for the POST endpoint. Overrides -N.");
     op.parse(argc, argv);
+
+    gpt_params params;
 
     if (!model_opt->is_set())
     {
-        HTTP_LOGGER("Must set a model file.\n\n");
+        HTTP_LOGGER("Must set at least one model path (-m)\n\n");
         help_opt->set_value(true);
     }
 
@@ -200,14 +220,54 @@ int main(int argc, char **argv)
         exit(0);
     }
 
-    auto models = discover_valid_models(model_opt->value());
+    models_map_t models;
+    for (size_t c = 0; c < model_opt->count(); c++)
+    {
+        discover_valid_models(model_opt->value(c), &models);
+    }
 
     if (!models.size())
     {
-        HTTP_LOGGER("No valid models found in '%s'!\n", model_opt->value().c_str());
+        HTTP_LOGGER("No valid models found!\n");
     }
 
-    gpt_params params;
+    std::map<std::string, KeyedRequestAuditLog> keys;
+    if (keys_json_opt->is_set())
+    {
+        std::ifstream json_read{keys_json_opt->value()};
+        auto j = nlohmann::json::parse(json_read, nullptr, false);
+        if (!j.is_discarded())
+        {
+            for (nlohmann::json::iterator it = j.begin(); it != j.end(); ++it)
+            {
+                keys.emplace(std::make_pair(*it, KeyedRequestAuditLog{}));
+            }
+        }
+    }
+
+    AuthOptions auth_options;
+    if (keys.size())
+    {
+        HTTP_LOGGER("Registered %lu API keys\n", keys.size());
+        auth_options.keys = &keys;
+        auth_options.level = AuthLevel::Default;
+
+        if (rt_open_opt->is_set() && rt_open_opt->value())
+        {
+            auth_options.level = AuthLevel::HighPriority;
+        }
+
+        if (protect_post_op->is_set() && protect_post_op->value())
+        {
+            auth_options.level = AuthLevel::POSTPrompt;
+        }
+    }
+
+    if (temp_opt->is_set())
+    {
+        params.temp = temp_opt->value();
+    }
+
     params.n_ctx = ctx_sz_opt->value();
     std::string hname = host_opt->value();
     uint16_t port = port_opt->value();
@@ -227,12 +287,12 @@ int main(int argc, char **argv)
             session_ep = std::make_shared<std::string>(priv_path_opt->value());
         }
 
-        prompt_servicer = http_server_run(hname, port, params.n_ctx, models, &session_ep, &total_timings);
+        prompt_servicer = http_server_run(hname, port, params.n_ctx, models, &session_ep, &total_timings, auth_options);
         HTTP_LOGGER("Session private endpoint is %s\n", session_ep->c_str());
     }
     else
     {
-        prompt_servicer = http_server_run(hname, port, params.n_ctx, models, nullptr, &total_timings);
+        prompt_servicer = http_server_run(hname, port, params.n_ctx, models, nullptr, &total_timings, auth_options);
     }
 
     HTTP_LOGGER("Using context size of %d\n", params.n_ctx);
@@ -247,9 +307,36 @@ int main(int argc, char **argv)
 
         if (params.prompt.size())
         {
+            uint set_mirostat = 0;
+
+            // from config
+            const auto &model_spec = models[prompt_resp.model];
+            if (!model_spec["mirostat"].is_null() && model_spec["mirostat"].is_number_unsigned())
+            {
+                uint mirostat_val = model_spec["mirostat"];
+                if (mirostat_val > 0 && mirostat_val <= 2)
+                {
+                    set_mirostat = mirostat_val;
+                }
+            }
+
+            // from request, overrides config
+            if (prompt_resp.mirostat)
+            {
+                set_mirostat = prompt_resp.mirostat;
+            }
+
+            if (set_mirostat > 0)
+            {
+                params.mirostat = set_mirostat;
+                HTTP_LOGGER("Using mirostat %d for model %s\n", params.mirostat, prompt_resp.model.c_str());
+            }
+
+            HTTP_LOGGER("Processing starting on prompt ID %s with %s:\n%s\n",
+                        prompt_resp.id.c_str(), prompt_resp.model.c_str(), params.prompt.c_str());
             response = run_one_prompt(params, &timings);
-            HTTP_LOGGER("Response to prompt ID %s \"%s\" via %s:\n%s\n",
-                        prompt_resp.id.c_str(), params.prompt.c_str(), prompt_resp.model.c_str(), response.c_str());
+            HTTP_LOGGER("Response to prompt ID %s:\n%s\n", prompt_resp.id.c_str(), response.c_str());
+
             increment_total_timings(&timings, &total_timings);
             if (ptimings_opt->is_set())
             {
@@ -264,7 +351,7 @@ int main(int argc, char **argv)
             timings.n_sample);
 
         params.prompt = prompt_resp.prompt;
-        params.model = fs::path{model_opt->value()} / prompt_resp.model;
+        params.model = fs::path{std::string(models[prompt_resp.model]["parentPath"])} / prompt_resp.model;
     }
 
     return 0;

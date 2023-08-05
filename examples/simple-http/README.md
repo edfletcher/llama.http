@@ -34,6 +34,8 @@ An HTTP server with a very simple REST interface.
 
 Optionally, the `promptWrappers` data structure seen elsewhere may be included, where the constituent parameters are optional and if included will override the configure prompt wrappers.
 
+Also optional is a `priority` field (a string) for which the only current legal values are `LOW`, `NORMAL` and `HIGH`. By default, `NORMAL` is used. `HIGH` requires authorization with an API key.
+
 Will return HTTP 413 if the prompt is too large, or `application/json` in the following shape on success:
 
 ```json
@@ -153,6 +155,7 @@ These sidecar files must have the following shape:
 {
     "displayName": "<freeform name to show to users>",
     "sourceURL": "<URL where the model is described & can be downloaded>",
+    "description": "<optional longer description of the model>",
     "promptWrappers": {
         "pre": "<string to be prepended to the user prompt>",
         "post": "<string to be appended to the user prompt>"
@@ -160,6 +163,6 @@ These sidecar files must have the following shape:
 }
 ```
 
-`displayName` and `sourceURL` are **required**. `promptWrappers` are optional: by default, the prompt will _not_ be wrapped with anything unless specified in the sidecar JSON.
+`displayName` and `sourceURL` are **required**. `description` & `promptWrappers` are optional. By default for the latter, the prompt will _not_ be wrapped with anything unless specified in the sidecar JSON.
 
-Most model cards specify which prompt wrappers (if any) the model was trained with.
+Most model cards specify which prompt wrappers (if any) the model was trained with, some of which may support multiple prompting formats or system/character/context prompts that optionally preceed the user prompt.

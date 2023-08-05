@@ -10,11 +10,28 @@
 
 using models_map_t = std::map<std::string, nlohmann::json>;
 
+enum QueuePriority
+{
+    LOW = -128,
+    NORMAL = 0,
+    HIGH = 128,
+};
+
+struct QueueElement
+{
+    uint64_t id;
+    int64_t queued_ts_ms;
+    std::string prompt;
+    QueuePriority priority;
+    uint mirostat;
+};
+
 struct ServicerResponse
 {
     std::string id;
     std::string prompt;
     std::string model;
+    uint mirostat;
 };
 
 struct ResponsePlusMetrics
@@ -22,11 +39,42 @@ struct ResponsePlusMetrics
     std::string response = "";
     float elapsed_ms = -1.0;
     int tokens = -1;
-    size_t queue_position = -1;
     std::string model = "";
     std::string remote_addr = "";
     std::string queued_iso8601 = "";
     std::string end_iso8601 = "";
+};
+
+struct KeyedRequestAuditLog
+{
+    uint64_t count = 0;
+    struct
+    {
+        std::string remote_addr = "";
+        std::string path = "";
+    } last;
+};
+
+// Any higher value implies those below it (except "None", obviously).
+// Put another way: anything higher-valued than the current setting will
+// *not* require authorization.
+// XXX: damn, should probably be a bitfield...
+enum AuthLevel
+{
+    None = 0,
+    HighPriority = 1,
+    Runtime = 2,
+    Default = Runtime,
+    POSTPrompt = 252,
+    GETPromptById = 253,
+    All = 254
+};
+
+struct AuthOptions
+{
+    // anything but "None" requires `keys` be set & valid
+    AuthLevel level = AuthLevel::None;
+    std::map<std::string, KeyedRequestAuditLog> *keys = nullptr;
 };
 
 // blocks until the next prompt is available
@@ -42,4 +90,5 @@ http_prompt_servicer http_server_run(
     models_map_t models,
     // set to nullptr to disable the session private endpoint entirely
     std::shared_ptr<std::string> *session_ep,
-    struct llama_timings *total_timings);
+    struct llama_timings *total_timings,
+    AuthOptions auth_options);

@@ -11,8 +11,6 @@
 #include <unordered_map>
 #include <tuple>
 
-#define LOGGER(fmt_str, ...) fprintf(stderr, "[%s] " fmt_str, iso8601_timestamp().c_str(), ##__VA_ARGS__)
-
 //
 // CLI argument parsing
 //

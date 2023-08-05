@@ -7,3 +7,6 @@
 [submodule "deps/popl"]
 	path = deps/popl
 	url = https://github.com/badaix/popl.git
+[submodule "deps/cppcodec"]
+	path = deps/cppcodec
+	url = https://github.com/tplgy/cppcodec.git
